@@ -13,14 +13,14 @@ API_KEY = os.getenv("COINDESK_API_KEY")
 def safe_fromtimestamp(ts):
     return datetime.fromtimestamp(ts, tz=timezone.utc) if ts else None
 
-def fetch_price_data(market: str, instrument: str, to_ts: int, limit: int = 2000):
+def fetch_hourly_price_data(market: str, instrument: str, to_ts: int, limit: int = 720):
     response = requests.get(
-        'https://data-api.coindesk.com/index/cc/v1/historical/minutes',
+        'https://data-api.coindesk.com/index/cc/v1/historical/hours',
         params={
             "market": market,
             "instrument": instrument,
             "aggregate": 1,
-            # "fill": "true",  # Removed to avoid filler duplicates
+            "fill": "true",
             "apply_mapping": "true",
             "response_format": "JSON",
             "to_ts": to_ts,
@@ -73,7 +73,7 @@ def store_prices(db: Session, prices: list):
         ))
         count += 1
     db.commit()
-    print(f"Stored {count} new price entries.")
+    print(f"Stored {count} new hourly price entries.")
 
 def get_latest_timestamp_in_db(db: Session, instrument: str):
     latest = db.query(price).filter(price.instrument == instrument).order_by(price.timestamp.desc()).first()
@@ -86,23 +86,23 @@ def fetch_and_store_backward(db: Session, market: str, instrument: str, from_ts:
     to_ts = int(datetime.now(timezone.utc).timestamp())
 
     while to_ts > from_ts:
-        print(f"Fetching prices up to timestamp: {to_ts}")
-        prices = fetch_price_data(market, instrument, to_ts=to_ts)
+        print(f"Fetching hourly prices up to timestamp: {to_ts}")
+        prices = fetch_hourly_price_data(market, instrument, to_ts=to_ts)
         if not prices:
-            print("No more prices returned; stopping backward fetch.")
+            print("No more data returned.")
             break
         store_prices(db, prices)
         oldest_ts = min(p["TIMESTAMP"] for p in prices)
         if oldest_ts <= from_ts:
-            print("Reached the desired start timestamp; backward fetch complete.")
+            print("Reached desired start timestamp.")
             break
-        to_ts = oldest_ts - 60  # step back 1 minute
+        to_ts = oldest_ts - 3600  # step back one hour
 
 def fetch_and_store_forward(db: Session, market: str, instrument: str, from_ts: int):
     print("Starting forward fetch...")
     to_ts = int(datetime.now(timezone.utc).timestamp())
-    print(f"Fetching prices up to timestamp: {to_ts}")
-    prices = fetch_price_data(market, instrument, to_ts=to_ts, limit=2000)
+    print(f"Fetching hourly prices up to timestamp: {to_ts}")
+    prices = fetch_hourly_price_data(market, instrument, to_ts=to_ts, limit=720)
     new_prices = [p for p in prices if p["TIMESTAMP"] > from_ts]
     store_prices(db, new_prices)
     print("Forward fetch complete.")
@@ -113,11 +113,21 @@ def update_prices(market: str, instrument: str):
     one_month_ago_ts = int((datetime.now(timezone.utc) - timedelta(days=30)).timestamp())
 
     if latest_ts is None:
-        print("No existing price data found; backfilling last month.")
+        print("No existing price data; fetching last 30 days.")
         fetch_and_store_backward(db, market, instrument, one_month_ago_ts)
     else:
-        print(f"Latest price timestamp in DB: {latest_ts}")
+        print(f"Latest timestamp in DB: {latest_ts}")
         fetch_and_store_forward(db, market, instrument, latest_ts)
+
+def truncate_price_table():
+    db = SessionLocal()
+    try:
+        db.execute("TRUNCATE TABLE price RESTART IDENTITY CASCADE;")
+        db.commit()
+    except Exception as e:
+        db.rollback()
+    finally:
+        db.close()
 
 if __name__ == "__main__":
     update_prices("cadli", "BTC-USD")
