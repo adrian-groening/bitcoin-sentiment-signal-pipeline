@@ -122,12 +122,13 @@ def update_prices(market: str, instrument: str):
 def truncate_price_table():
     db = SessionLocal()
     try:
-        db.execute("TRUNCATE TABLE price RESTART IDENTITY CASCADE;")
+        db.query(price).delete()
         db.commit()
     except Exception as e:
         db.rollback()
     finally:
         db.close()
+
 
 if __name__ == "__main__":
     update_prices("cadli", "BTC-USD")
